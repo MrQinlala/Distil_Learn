@@ -8,6 +8,8 @@ import torch.optim as optim
 import os
 import argparse
 
+import matplotlib.pyplot as plt
+
 # 设置模型名称
 teacher_model_name = "gpt2-medium"
 student_model_name = "gpt2"  # 也可自定义更小的模型结构
@@ -167,9 +169,13 @@ student_model.train()
 
 parser = argparse.ArgumentParser()
 parser.add_argument("--save_path",default = './save')
-parser.add_argument("--save_name",default = './save/dl_test')
+parser.add_argument("--save_name",default = 'dl_test')
+parser.add_argument("--plot_path",default = './plot',help="损失曲线保存路径")
+parser.add_argument("--plot_name",default = 'dl_test_first.png',help = "损失曲线文件名")
 #解析参数
 args = parser.parse_args()
+
+train_loss_history = []
 #计算模型参数
 def count_parameters(model):
     total_params = sum(p.numel() for p in model.parameters())
@@ -183,7 +189,7 @@ def count_parameters(model):
 #  训练
 
 if not os.path.exists(args.save_path):
-    os.path.mkdir(args.save_path)
+    os.makedirs(args.save_path)
 
 for epoch in range(num_epochs):
     total_loss_val = 0.0
@@ -218,43 +224,55 @@ for epoch in range(num_epochs):
             min_temp=0.1,
             temp_penalty=0.01
         )
+        #将每次的损失添加到train_loss_history列表中,便于后续画图
+        train_loss_history.append(loss.item())
  
         optimizer.zero_grad()
         loss.backward()
         optimizer.step()
- 
+        #增加损失值累加
         total_loss_val += loss.item()
  
         if step % 100 == 0:
             print(f"Epoch {epoch}, Step {step}, Loss {loss.item():.4f}")
-            torch.save(student_model.state_dict(),f"{args.save_path}/{args.save_name}{step%100}.pth")
+            torch.save(student_model.state_dict(),f"{args.save_path}/{args.save_name}{step//100}.pth")
     avg_loss = total_loss_val / (step+1)
     print(f"Epoch {epoch} finished, avg loss = {avg_loss:.4f}")
 
+plt.figure(figsize=(12, 6))
+plt.plot(train_loss_history,label='step loss')
+plt.title('Training Loss Curve')
+plt.xlabel('Training Steps')
+plt.ylabel('Loss Value')
+plt.legend()
+plt.grid(True)
 
 
-
-
+os.makedirs(args.plot_path,exist_ok=True)
+plot_save_path = os.path.join(args.plot_path, args.plot_name)
+plt.savefig(plot_save_path)
+print(f"Loss Curve saved to {plot_save_path}")
+plt.show()
 
 
 
 # 评估函数
-def evaluate(model, dataloader, tokenizer):
-    total_loss = 0.0
-    model.eval()
-    with torch.no_grad():
-        for batch in dataloader:
-            input_ids = batch["input_ids"].to(device)
-            attention_mask = batch["attention_mask"].to(device)
+# def evaluate(model, dataloader, tokenizer):
+#     total_loss = 0.0
+#     model.eval()
+#     with torch.no_grad():
+#         for batch in dataloader:
+#             input_ids = batch["input_ids"].to(device)
+#             attention_mask = batch["attention_mask"].to(device)
             
-            # 标签处理（填充部分设为-100）
-            labels = input_ids.clone()
-            labels[labels == tokenizer.pad_token_id] = -100
+#             # 标签处理（填充部分设为-100）
+#             labels = input_ids.clone()
+#             labels[labels == tokenizer.pad_token_id] = -100
             
-            outputs = model(input_ids, attention_mask=attention_mask, labels=labels)
-            loss = outputs.loss
-            total_loss += loss.item() * input_ids.size(0)  # 考虑batch_size差异
+#             outputs = model(input_ids, attention_mask=attention_mask, labels=labels)
+#             loss = outputs.loss
+#             total_loss += loss.item() * input_ids.size(0)  # 考虑batch_size差异
             
-    avg_loss = total_loss / len(dataloader.dataset)
-    perplexity = torch.exp(torch.tensor(avg_loss)).item()
-    return avg_loss, perplexity
+#     avg_loss = total_loss / len(dataloader.dataset)
+#     perplexity = torch.exp(torch.tensor(avg_loss)).item()
+#     return avg_loss, perplexity
