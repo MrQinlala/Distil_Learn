@@ -1,9 +1,13 @@
-mport torch
+import torch
 from torch import nn
 from transformers import GPT2LMHeadModel, GPT2Tokenizer, AutoTokenizer
-from datasets import load_dataset
+from datasets import load_dataset,Dataset
+from torch.utils.data import DataLoader
 import torch.nn.functional as F
 import torch.optim as optim
+import os
+import argparse
+
 # 设置模型名称
 teacher_model_name = "gpt2-medium"
 student_model_name = "gpt2"  # 也可自定义更小的模型结构
@@ -21,23 +25,33 @@ student_tokenizer.pad_token = student_tokenizer.eos_token
 student_model = GPT2LMHeadModel.from_pretrained(student_model_name).to(device)
  
 # 简单数据集：使用 wikitext-2 做语言建模蒸馏演示
-dataset = load_dataset("wikitext", "wikitext-2-raw-v1", split='train')
-# print(f"原始数据:{dataset[0]['text']}")
-# print("空样本数量：", sum(1 for x in dataset if len(x["text"].strip()) == 0)) 
+train_dataset = load_dataset("wikitext", "wikitext-2-raw-v1", split='train')
+test_dataset  = load_dataset("wikitext", "wikitext-2-raw-v1", split='test')
+# print(f"原始数据:{train_dataset[0]['text']}")
+# print("空样本数量：", sum(1 for x in train_dataset if len(x["text"].strip()) == 0)) 
 def tokenize_fn(examples):
-    return teacher_tokenizer(examples["text"], truncation=True, max_length=128,padding="max_length",return_tensors='pt')
- 
-tokenized_dataset = dataset.map(tokenize_fn, batched=True, remove_columns=["text"])
+    return teacher_tokenizer(
+        examples["text"],
+         truncation=True, 
+         max_length=128,
+         padding="max_length",
+         return_tensors='pt')
+#对所有数据集使用tokenize_fn进行处理
+tokenized_dataset = train_dataset.map(tokenize_fn, batched=True, remove_columns=["text"])
+
+
 # print(f"数据总量,{len(tokenized_dataset)}")
 # print(f"示例数据",tokenized_dataset)
 # print(type(tokenized_dataset))
 # PyTorch DataLoader
+#接收一个batch即列表，列表元素是字典形式
 def collate_fn(batch):
     # 这里直接使用 teacher_tokenizer 的 pad 方法，也可用 student_tokenizer
     # return teacher_tokenizer.pad(batch, return_tensors="pt")
     if len(batch) == 0:
         raise ValueError("空批次数据")
-    # 使用 student_tokenizer 保持一致性（原代码可能因 tokenizer 不一致导致问题）
+    # 使用 student_tokenizer 保持数据一致性（原代码可能因 tokenizer 不一致导致问题）
+    # 使用teacher_tokenizer对批次进行填充，避免数据长度等不一致
     return teacher_tokenizer.pad(  
         batch,
         return_tensors="pt",
@@ -45,7 +59,6 @@ def collate_fn(batch):
         max_length=128  # 显式设置最大长度
     )
  
-from torch.utils.data import DataLoader
  
 train_loader = DataLoader(tokenized_dataset, batch_size=8, shuffle=True, collate_fn=collate_fn)
 
@@ -65,7 +78,7 @@ def distillation_loss_function(teacher_logits, student_logits,
     #    让学生在真实标签上也保持一定的准确度
     #    -100 表示填充位置不计算loss
     lm_loss = F.cross_entropy(
-        student_logits.view(-1, student_logits.size(-1)),
+        student_logits.view(-1, student_logits.size(-1)),  #（batch_size*seq_length,vacab_size），使每个词的位置但对于进行交叉熵计算
         labels.view(-1),
         ignore_index=-100
     )
@@ -74,12 +87,13 @@ def distillation_loss_function(teacher_logits, student_logits,
     #    对 teacher / student 的 logits 做 softmax with temperature
     #    p(t) = softmax(teacher_logits / T)
     #    q(s) = softmax(student_logits / T)
+    #    dim=-1是
     teacher_probs = F.log_softmax(teacher_logits / temperature, dim=-1)
     student_probs = F.log_softmax(student_logits / temperature, dim=-1)
-    
+     
     distill_loss = F.kl_div(
         student_probs, 
-        teacher_probs.exp(),  # kl_div 需要 target 是概率分布 (非 log)
+        teacher_probs.exp(),  # kl_div 需要 target 是概率分布 (非 log),所以要取exp(),实际上可以直接teacher_
         reduction='batchmean'
     ) * (temperature**2)
  
@@ -150,16 +164,38 @@ temperature = 2.0
  
 student_model.train()
 
+
+parser = argparse.ArgumentParser()
+parser.add_argument("--save_path",default = './save')
+parser.add_argument("--save_name",default = './save/dl_test')
+#解析参数
+args = parser.parse_args()
+#计算模型参数
+def count_parameters(model):
+    total_params = sum(p.numel() for p in model.parameters())
+    train_total_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
+    return total_params,train_total_params
+# teacher_total,teacher_train=count_parameters(teacher_model)
+# student_total,student_train=count_parameters(student_model)
+# print(f"teacher_total:{teacher_total},teacher_train:{teacher_train}")
+# print(f"student_total:{student_total},student_train:{student_train}")
+
 #  训练
+
+if not os.path.exists(args.save_path):
+    os.path.mkdir(args.save_path)
+
 for epoch in range(num_epochs):
     total_loss_val = 0.0
     for step, batch in enumerate(train_loader):
       
-        ## 在训练循环中将输入数据移动到GPU修改
+        ## 在训练循环中将输入数据移动到GPU修改，batch["inputs_ids"]对应当前批次所有样本的词元索引矩阵
+        # 赋值后的inputs_ids为(batch_size,seq_length),代表当前批次所有的词元的索引
         input_ids = batch["input_ids"].to(device)
         attention_mask = batch["attention_mask"].to(device)
         assert input_ids.shape[-1] > 0, "输入维度异常"
         with torch.no_grad():
+            # (batch__size,seq_length,vocab_size)
             teacher_logits = teacher_model(input_ids, attention_mask=attention_mask).logits
             
  
@@ -169,6 +205,7 @@ for epoch in range(num_epochs):
         # labels 用来计算学生的 LM 任务损失
         labels = input_ids.clone()
         # 也可以把 padding位置设为 -100
+        # 标签处理将填充部分设为-100，避免计算这些位置的损失。
         labels[labels==teacher_tokenizer.pad_token_id] = -100
  
         loss = improved_distillation_loss(
@@ -190,7 +227,34 @@ for epoch in range(num_epochs):
  
         if step % 100 == 0:
             print(f"Epoch {epoch}, Step {step}, Loss {loss.item():.4f}")
- 
+            torch.save(student_model.state_dict(),f"{args.save_path}/{args.save_name}{step%100}.pth")
     avg_loss = total_loss_val / (step+1)
     print(f"Epoch {epoch} finished, avg loss = {avg_loss:.4f}")
 
+
+
+
+
+
+
+
+# 评估函数
+def evaluate(model, dataloader, tokenizer):
+    total_loss = 0.0
+    model.eval()
+    with torch.no_grad():
+        for batch in dataloader:
+            input_ids = batch["input_ids"].to(device)
+            attention_mask = batch["attention_mask"].to(device)
+            
+            # 标签处理（填充部分设为-100）
+            labels = input_ids.clone()
+            labels[labels == tokenizer.pad_token_id] = -100
+            
+            outputs = model(input_ids, attention_mask=attention_mask, labels=labels)
+            loss = outputs.loss
+            total_loss += loss.item() * input_ids.size(0)  # 考虑batch_size差异
+            
+    avg_loss = total_loss / len(dataloader.dataset)
+    perplexity = torch.exp(torch.tensor(avg_loss)).item()
+    return avg_loss, perplexity
