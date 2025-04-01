@@ -117,23 +117,17 @@ def improved_distillation_loss(
     min_temp=0.1,        # 温度下限防止数值不稳定
     temp_penalty=0.01    # 温度参数的正则化强度
 ):
-    # 动态温度衰减策略（线性衰减到目标温度）
-    def decay_temp(init_temp, final_temp=1.0):
-        if step is None or max_steps <= 0:
-            return init_temp
-        progress = min(step / max_steps, 1.0)
-        return max(init_temp * (1 - progress) + final_temp * progress, min_temp)
+    # 动态温度衰减策略（线性衰减到目标温度）,移到外面
+    # def decay_temp(init_temp, final_temp=1.0):
+    #     if step is None or max_steps <= 0:
+    #         return init_temp
+    #     progress = min(step / max_steps, 1.0)
+    #     return max(init_temp * (1 - progress) + final_temp * progress, min_temp)
     
     # 应用温度衰减
-    teacher_temp = decay_temp(teacher_temp, final_temp=1.0)
-    student_temp = decay_temp(student_temp, final_temp=1.0)
-    
-    # 温度正则化项（防止温度趋近极端值）
-    # temp_reg = temp_penalty * (
-    #     (teacher_temp - 1.0)**2 + 
-    #     (student_temp - 1.0)**2
-    # )
-    
+    # teacher_temp = decay_temp(teacher_temp, final_temp=1.0)
+    # student_temp = decay_temp(student_temp, final_temp=1.0)
+   
     #计算温度正则化的偏方差
     temp_reg = temp_penalty*(
         (pow(teacher_temp - 1.0,2))+
@@ -154,6 +148,12 @@ def improved_distillation_loss(
     #kl通过Logits计算 T->logits->kl
     loss = (student_temp ** 2) * kl + temp_reg
     return loss
+
+def decay_temp(init_temp, final_temp=1.0, step=None, max_steps=10000, min_temp=0.1):
+    if step is None or max_steps <= 0:
+        return init_temp
+    progress = min(step / max_steps, 1.0)
+    return max(init_temp * (1 - progress) + final_temp * progress, min_temp)
  
 # 冻结教师模型，不参与训练
 for param in teacher_model.parameters():
@@ -170,11 +170,11 @@ student_model.train()
 
 parser = argparse.ArgumentParser()
 parser.add_argument("--save_path",default = './save')
-parser.add_argument("--save_name",default = 'dl_test_temper_change')
+parser.add_argument("--save_name",default = 'dl_test_remove_decay')
 # parser.add_argument("--plot_path",default = '/root/autodl-tmp',help="损失曲线保存路径")
 
 parser.add_argument("--plot_path",default = './save/img',help="损失曲线保存路径")
-parser.add_argument("--plot_name",default = 'dl_first_temper_change.png',help = "损失曲线文件名")
+parser.add_argument("--plot_name",default = 'dl_first_remove_decay.png',help = "损失曲线文件名")
 #解析参数
 args = parser.parse_args()
 
@@ -191,34 +191,34 @@ def count_parameters(model):
 
 
 # #测评模型
-# def evaluate(model, dataloader, tokenizer):
-#     total_loss = 0.0
-#     model.eval()
-#     with torch.no_grad():
-#         for batch in dataloader:
-#             input_ids = batch["input_ids"].to(device)
-#             attention_mask = batch["attention_mask"].to(device)
+def evaluate(model, dataloader, tokenizer):
+    total_loss = 0.0
+    model.eval()
+    with torch.no_grad():
+        for batch in dataloader:
+            input_ids = batch["input_ids"].to(device)
+            attention_mask = batch["attention_mask"].to(device)
             
-#             # 标签处理（填充部分设为-100）
-#             labels = input_ids.clone()
-#             labels[labels == tokenizer.pad_token_id] = -100
+            # 标签处理（填充部分设为-100）
+            labels = input_ids.clone()
+            labels[labels == tokenizer.pad_token_id] = -100
             
-#             outputs = model(input_ids, attention_mask=attention_mask, labels=labels)
-#             loss = outputs.loss
-#             total_loss += loss.item() * input_ids.size(0)  # 考虑batch_size差异
+            outputs = model(input_ids, attention_mask=attention_mask, labels=labels)
+            loss = outputs.loss
+            total_loss += loss.item() * input_ids.size(0)  # 考虑batch_size差异
             
-#     avg_loss = total_loss / len(dataloader.dataset)
-#     perplexity = torch.exp(torch.tensor(avg_loss)).item()
-#     return avg_loss, perplexity
+    avg_loss = total_loss / len(dataloader.dataset)
+    perplexity = torch.exp(torch.tensor(avg_loss)).item()
+    return avg_loss, perplexity
 
 
 
-# if not os.path.exists(args.save_path):
-#     os.makedirs(args.save_path)
-# student_model.load_state_dict(torch.load("/root/kl/Distil_Learn/save/origin_test.pth"))
-# student_loss,student_perplexity=evaluate(student_model, test_loader, student_tokenizer)
-# print(f"student Model 测试结果:{student_loss}")
-# print(f"平均损失: {student_loss:.4f}, 困惑度: {student_perplexity:.2f}")
+if not os.path.exists(args.save_path):
+    os.makedirs(args.save_path)
+student_model.load_state_dict(torch.load("/root/kl/Distil_Learn/save/dl_test_remove_decay.pth"))
+student_loss,student_perplexity=evaluate(student_model, test_loader, student_tokenizer)
+print(f"student Model 测试结果:{student_loss}")
+print(f"平均损失: {student_loss:.4f}, 困惑度: {student_perplexity:.2f}")
 
 
 # teacher_loss, teacher_perplexity = evaluate(teacher_model, test_loader, teacher_tokenizer)
@@ -226,69 +226,69 @@ def count_parameters(model):
 # print(f"平均损失: {teacher_loss:.4f}, 困惑度: {teacher_perplexity:.2f}")
 
 
-#  训练
-for epoch in range(num_epochs):
-    total_loss_val = 0.0
-    for step, batch in enumerate(train_loader):
+# #  训练
+# for epoch in range(num_epochs):
+#     total_loss_val = 0.0
+#     for step, batch in enumerate(train_loader):
       
-        ## 在训练循环中将输入数据移动到GPU修改，batch["inputs_ids"]对应当前批次所有样本的词元索引矩阵
-        # 赋值后的inputs_ids为(batch_size,seq_length),代表当前批次所有的词元的索引
-        input_ids = batch["input_ids"].to(device)
-        attention_mask = batch["attention_mask"].to(device)
-        assert input_ids.shape[-1] > 0, "输入维度异常"
-        with torch.no_grad():
-            # (batch__size,seq_length,vocab_size)
-            teacher_logits = teacher_model(input_ids, attention_mask=attention_mask).logits
+#         ## 在训练循环中将输入数据移动到GPU修改，batch["inputs_ids"]对应当前批次所有样本的词元索引矩阵
+#         # 赋值后的inputs_ids为(batch_size,seq_length),代表当前批次所有的词元的索引
+#         input_ids = batch["input_ids"].to(device)
+#         attention_mask = batch["attention_mask"].to(device)
+#         assert input_ids.shape[-1] > 0, "输入维度异常"
+#         with torch.no_grad():
+#             # (batch__size,seq_length,vocab_size)
+#             teacher_logits = teacher_model(input_ids, attention_mask=attention_mask).logits
             
  
-        student_logits = student_model(input_ids, attention_mask=attention_mask).logits
+#         student_logits = student_model(input_ids, attention_mask=attention_mask).logits
         
  
-        # labels 用来计算学生的 LM 任务损失
-        labels = input_ids.clone()
-        # 也可以把 padding位置设为 -100
-        # 标签处理将填充部分设为-100，避免计算这些位置的损失。
-        labels[labels==teacher_tokenizer.pad_token_id] = -100
+#         # labels 用来计算学生的 LM 任务损失
+#         labels = input_ids.clone()
+#         # 也可以把 padding位置设为 -100
+#         # 标签处理将填充部分设为-100，避免计算这些位置的损失。
+#         labels[labels==teacher_tokenizer.pad_token_id] = -100
  
-        loss = improved_distillation_loss(
-            student_logits,teacher_logits,
-            teacher_temp=2.0,
-            student_temp=1.5,
-            step=step,
-            max_steps=10000,
-            reduction='batchmean',
-            min_temp=0.1,
-            temp_penalty=0.01
-        )
-        #将每次的损失添加到train_loss_history列表中,便于后续画图
-        if step > 100:
-            train_loss_history.append(loss.item())
+#         loss = improved_distillation_loss(
+#             student_logits,teacher_logits,
+#             teacher_temp=5.0,
+#             student_temp=2.0,
+#             step=step,
+#             max_steps=10000,
+#             reduction='batchmean',
+#             min_temp=0.1,
+#             temp_penalty=0.01
+#         )
+#         #将每次的损失添加到train_loss_history列表中,便于后续画图
+#         if step > 100:
+#             train_loss_history.append(loss.item())
  
-        optimizer.zero_grad()
-        loss.backward()
-        optimizer.step()
-        #增加损失值累加
-        total_loss_val += loss.item()
+#         optimizer.zero_grad()
+#         loss.backward()
+#         optimizer.step()
+#         #增加损失值累加
+#         total_loss_val += loss.item()
  
-        if step % 100 == 0:
-            print(f"Epoch {epoch}, Step {step}, Loss {loss.item():.4f}")
-            # torch.save(student_model.state_dict(),f"{args.save_path}/{args.save_name}{step//100}.pth")
-    avg_loss = total_loss_val / (step+1)
-    print(f"Epoch {epoch} finished, avg loss = {avg_loss:.4f}")
+#         if step % 100 == 0:
+#             print(f"Epoch {epoch}, Step {step}, Loss {loss.item():.4f}")
+#             # torch.save(student_model.state_dict(),f"{args.save_path}/{args.save_name}{step//100}.pth")
+#     avg_loss = total_loss_val / (step+1)
+#     print(f"Epoch {epoch} finished, avg loss = {avg_loss:.4f}")
 
-torch.save(student_model.state_dict(),f"{args.save_path}/{args.save_name}.pth")
-plt.figure(figsize=(12, 6))
+# torch.save(student_model.state_dict(),f"{args.save_path}/{args.save_name}.pth")
+# plt.figure(figsize=(12, 6))
 
-plt.plot(train_loss_history,label='step loss')
-plt.title('Training Loss Curve')
-plt.xlabel('Training Steps')
-plt.ylabel('Loss Value')
-plt.legend()
-plt.grid(True)
+# plt.plot(train_loss_history,label='step loss')
+# plt.title('Training Loss Curve')
+# plt.xlabel('Training Steps')
+# plt.ylabel('Loss Value')
+# plt.legend()
+# plt.grid(True)
 
 
-os.makedirs(args.plot_path,exist_ok=True)
-plot_save_path = os.path.join(args.plot_path, args.plot_name)
-plt.savefig(plot_save_path)
-print(f"Loss Curve saved to {plot_save_path}")
-plt.show()
+# os.makedirs(args.plot_path,exist_ok=True)
+# plot_save_path = os.path.join(args.plot_path, args.plot_name)
+# plt.savefig(plot_save_path)
+# print(f"Loss Curve saved to {plot_save_path}")
+# plt.show()

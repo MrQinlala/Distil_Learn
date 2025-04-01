@@ -1,9 +1,14 @@
 import torch
 from torch import nn
 from transformers import GPT2LMHeadModel, GPT2Tokenizer, AutoTokenizer
-from datasets import load_dataset
+from datasets import load_dataset,Dataset
+from torch.utils.data import DataLoader
 import torch.nn.functional as F
 import torch.optim as optim
+import os
+import argparse
+
+import matplotlib.pyplot as plt
 # 设置模型名称
 teacher_model_name = "gpt2-medium"
 student_model_name = "gpt2"  # 也可自定义更小的模型结构
@@ -75,7 +80,7 @@ def distillation_loss_function(teacher_logits, student_logits,
     #    对 teacher / student 的 logits 做 softmax with temperature
     #    p(t) = softmax(teacher_logits / T)
     #    q(s) = softmax(student_logits / T)
-    assert not torch.isnan(lm_loss), "LM损失为NaN"  
+    # assert not torch.isnan(lm_loss), "LM损失为NaN"  
     teacher_probs = F.log_softmax(teacher_logits / temperature, dim=-1)
     student_probs = F.log_softmax(student_logits / temperature, dim=-1)
     
@@ -88,57 +93,57 @@ def distillation_loss_function(teacher_logits, student_logits,
     total_loss = alpha * lm_loss + (1 - alpha) * distill_loss
     return total_loss, lm_loss, distill_loss
 
-def improved_distillation_loss(
-    student_logits,     #(b_s,seq_len,vocab_size)
-    teacher_logits,
-    # 独立控制教师与学生的温度
-    teacher_temp=5.0,    # 教师温度：软化教师分布
-    student_temp=2.0,     # 学生温度：控制学习强度
-    # 动态温度衰减
-    step=None,            # 当前训练步数（用于动态温度）
-    max_steps=10000,     # 总训练步数
-    reduction='batchmean',
-    # 温度正则化约束
-    min_temp=0.1,        # 温度下限防止数值不稳定
-    temp_penalty=0.01    # 温度参数的正则化强度
-):
-    # 动态温度衰减策略（线性衰减到目标温度）
-    def decay_temp(init_temp, final_temp=1.0):
-        if step is None or max_steps <= 0:
-            return init_temp
-        progress = min(step / max_steps, 1.0)
-        return max(init_temp * (1 - progress) + final_temp * progress, min_temp)
+# def improved_distillation_loss(
+#     student_logits,     #(b_s,seq_len,vocab_size)
+#     teacher_logits,
+#     # 独立控制教师与学生的温度
+#     teacher_temp=5.0,    # 教师温度：软化教师分布
+#     student_temp=2.0,     # 学生温度：控制学习强度
+#     # 动态温度衰减
+#     step=None,            # 当前训练步数（用于动态温度）
+#     max_steps=10000,     # 总训练步数
+#     reduction='batchmean',
+#     # 温度正则化约束
+#     min_temp=0.1,        # 温度下限防止数值不稳定
+#     temp_penalty=0.01    # 温度参数的正则化强度
+# ):
+#     # 动态温度衰减策略（线性衰减到目标温度）
+#     def decay_temp(init_temp, final_temp=1.0):
+#         if step is None or max_steps <= 0:
+#             return init_temp
+#         progress = min(step / max_steps, 1.0)
+#         return max(init_temp * (1 - progress) + final_temp * progress, min_temp)
     
-    # 应用温度衰减
-    teacher_temp = decay_temp(teacher_temp, final_temp=2.0)
-    student_temp = decay_temp(student_temp, final_temp=1.0)
+#     # 应用温度衰减
+#     teacher_temp = decay_temp(teacher_temp, final_temp=2.0)
+#     student_temp = decay_temp(student_temp, final_temp=1.0)
     
-    # 温度正则化项（防止温度趋近极端值）
-    # temp_reg = temp_penalty * (
-    #     (teacher_temp - 1.0)**2 + 
-    #     (student_temp - 1.0)**2
-    # )
+#     # 温度正则化项（防止温度趋近极端值）
+#     # temp_reg = temp_penalty * (
+#     #     (teacher_temp - 1.0)**2 + 
+#     #     (student_temp - 1.0)**2
+#     # )
     
-    #计算温度正则化的偏方差
-    temp_reg = temp_penalty*(
-        (pow(teacher_temp - 1.0,2))+
-        (pow(student_temp - 1.0,2))
-    )
-    # 温度缩放后的概率分布
-    with torch.no_grad():
-        teacher_probs = F.softmax(teacher_logits / teacher_temp, dim=-1)
-    student_log_probs = F.log_softmax(student_logits / student_temp, dim=-1)
-    # KL散度计算
-    kl = F.kl_div(
-        student_log_probs,
-        teacher_probs,
-        reduction=reduction
-    )
-    # 温度补偿 + 正则化项
-    #teacher_temp和student_temp都是通过温度动态衰减进行调整，以控制学习强度和教师分布的软化程度。
-    #kl通过Logits计算 T->logits->kl
-    loss = (student_temp ** 2) * kl + temp_reg
-    return loss
+#     #计算温度正则化的偏方差
+#     temp_reg = temp_penalty*(
+#         (pow(teacher_temp - 1.0,2))+
+#         (pow(student_temp - 1.0,2))
+#     )
+#     # 温度缩放后的概率分布
+#     with torch.no_grad():
+#         teacher_probs = F.softmax(teacher_logits / teacher_temp, dim=-1)
+#     student_log_probs = F.log_softmax(student_logits / student_temp, dim=-1)
+#     # KL散度计算
+#     kl = F.kl_div(
+#         student_log_probs,
+#         teacher_probs,
+#         reduction=reduction
+#     )
+#     # 温度补偿 + 正则化项
+#     #teacher_temp和student_temp都是通过温度动态衰减进行调整，以控制学习强度和教师分布的软化程度。
+#     #kl通过Logits计算 T->logits->kl
+#     loss = (student_temp ** 2) * kl + temp_reg
+#     return loss
  
 # 冻结教师模型，不参与训练
 for param in teacher_model.parameters():
@@ -152,9 +157,22 @@ temperature = 2.0
  
 student_model.train()
 
+
+
+parser = argparse.ArgumentParser()
+parser.add_argument("--save_path",default = './save')
+parser.add_argument("--save_name",default = 'origin_test')
+# parser.add_argument("--plot_path",default = '/root/autodl-tmp',help="损失曲线保存路径")
+parser.add_argument("--plot_path",default = './save/img',help="损失曲线保存路径")
+parser.add_argument("--plot_name",default = 'origin_first.png',help = "损失曲线文件名")
+args = parser.parse_args()
+
+
+loss_history = []
 #  训练
 for epoch in range(num_epochs):
     total_loss_val = 0.0
+    
     for step, batch in enumerate(train_loader):
       
         ## 在训练循环中将输入数据移动到GPU修改
@@ -178,7 +196,11 @@ for epoch in range(num_epochs):
             labels,
             alpha=alpha, temperature=temperature
         )
+        if step > 100:
+            loss_history.append(loss.item())
  
+
+        
         optimizer.zero_grad()
         loss.backward()
         optimizer.step()
@@ -191,3 +213,17 @@ for epoch in range(num_epochs):
     avg_loss = total_loss_val / (step+1)
     print(f"Epoch {epoch} finished, avg loss = {avg_loss:.4f}")
 
+torch.save(student_model.state_dict(),f"{args.save_path}/{args.save_name}.pth")
+plt.plot(loss_history,label='step loss')
+plt.title('Training Loss Curve')
+plt.xlabel('Training Steps')
+plt.ylabel('Loss Value')
+plt.legend()
+plt.grid(True)
+
+if not os.path.exists(args.plot_path):
+    os.makedirs(args.plot_path,exist_ok=True)
+plot_save_path = os.path.join(args.plot_path, args.plot_name)
+plt.savefig(plot_save_path)
+print(f"Loss Curve saved to {plot_save_path}")
+plt.show()
