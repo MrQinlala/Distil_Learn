@@ -149,7 +149,7 @@ def improved_distillation_loss(
     loss = (student_temp ** 2) * kl + temp_reg
     return loss
 
-def decay_temp(init_temp, final_temp=1.0, step=None, max_steps=10000, min_temp=0.1):
+def decay_temp(init_temp, final_temp, step=None, max_steps=10000, min_temp=0.1):
     if step is None or max_steps <= 0:
         return init_temp
     progress = min(step / max_steps, 1.0)
@@ -158,27 +158,7 @@ def decay_temp(init_temp, final_temp=1.0, step=None, max_steps=10000, min_temp=0
 # 冻结教师模型，不参与训练
 for param in teacher_model.parameters():
     param.requires_grad = False
- 
-optimizer = optim.AdamW(student_model.parameters(), lr=1e-5)
- 
-num_epochs = 1  # 简单跑1轮演示
-alpha = 0.5
-temperature = 2.0
- 
-student_model.train()
 
-
-parser = argparse.ArgumentParser()
-parser.add_argument("--save_path",default = './save')
-parser.add_argument("--save_name",default = 'dl_test_remove_decay')
-# parser.add_argument("--plot_path",default = '/root/autodl-tmp',help="损失曲线保存路径")
-
-parser.add_argument("--plot_path",default = './save/img',help="损失曲线保存路径")
-parser.add_argument("--plot_name",default = 'dl_first_remove_decay.png',help = "损失曲线文件名")
-#解析参数
-args = parser.parse_args()
-
-train_loss_history = []
 #计算模型参数
 def count_parameters(model):
     total_params = sum(p.numel() for p in model.parameters())
@@ -198,7 +178,6 @@ def evaluate(model, dataloader, tokenizer):
         for batch in dataloader:
             input_ids = batch["input_ids"].to(device)
             attention_mask = batch["attention_mask"].to(device)
-            
             # 标签处理（填充部分设为-100）
             labels = input_ids.clone()
             labels[labels == tokenizer.pad_token_id] = -100
@@ -212,79 +191,133 @@ def evaluate(model, dataloader, tokenizer):
     return avg_loss, perplexity
 
 
-
-if not os.path.exists(args.save_path):
-    os.makedirs(args.save_path)
-student_model.load_state_dict(torch.load("/root/kl/Distil_Learn/save/dl_test_remove_decay.pth"))
-student_loss,student_perplexity=evaluate(student_model, test_loader, student_tokenizer)
-print(f"student Model 测试结果:{student_loss}")
-print(f"平均损失: {student_loss:.4f}, 困惑度: {student_perplexity:.2f}")
-
+# if not os.path.exists(args.save_path):
+#     os.makedirs(args.save_path)
+# student_model.load_state_dict(torch.load("/root/kl/Distil_Learn/save/dl_test_remove_decay.pth"))
+# student_loss,student_perplexity=evaluate(student_model, test_loader, student_tokenizer)
+# print(f"student Model 测试结果:{student_loss}")
+# print(f"平均损失: {student_loss:.4f}, 困惑度: {student_perplexity:.2f}")
 
 # teacher_loss, teacher_perplexity = evaluate(teacher_model, test_loader, teacher_tokenizer)
 # print(f"Teacher Model 测试结果:")
 # print(f"平均损失: {teacher_loss:.4f}, 困惑度: {teacher_perplexity:.2f}")
 
 
+
+
+optimizer = optim.AdamW(student_model.parameters(), lr=1e-5)
+ 
+num_epochs = 1  # 简单跑1轮演示
+alpha = 0.5
+temperature = 2.0
+student_model.train()
+
+train_loss_history = []
+teacher_temp_history = []
+student_temp_history = []
+num_step = num_epochs*len(train_loader)
+
+parser = argparse.ArgumentParser()
+parser.add_argument("--save_path",default = './save')
+parser.add_argument("--save_name",default = 'dl_test_temper_change2')
+# parser.add_argument("--plot_path",default = '/root/autodl-tmp',help="损失曲线保存路径")
+
+parser.add_argument("--plot_path",default = './save/img',help="损失曲线保存路径")
+parser.add_argument("--plot_name",default = 'dl_second_temper_change.png',help = "损失曲线文件名")
+
+parser.add_argument("--temp_path",default = "./save/temp")
+parser.add_argument("--teacher_temp_name",default = 'teacher_temp')
+parser.add_argument("--student_temp_name",default = 'student_temp')
+
+#解析参数
+args = parser.parse_args()
+
+
 # #  训练
-# for epoch in range(num_epochs):
-#     total_loss_val = 0.0
-#     for step, batch in enumerate(train_loader):
+for epoch in range(num_epochs):
+    total_loss_val = 0.0
+    for step, batch in enumerate(train_loader):
       
-#         ## 在训练循环中将输入数据移动到GPU修改，batch["inputs_ids"]对应当前批次所有样本的词元索引矩阵
-#         # 赋值后的inputs_ids为(batch_size,seq_length),代表当前批次所有的词元的索引
-#         input_ids = batch["input_ids"].to(device)
-#         attention_mask = batch["attention_mask"].to(device)
-#         assert input_ids.shape[-1] > 0, "输入维度异常"
-#         with torch.no_grad():
-#             # (batch__size,seq_length,vocab_size)
-#             teacher_logits = teacher_model(input_ids, attention_mask=attention_mask).logits
+        ## 在训练循环中将输入数据移动到GPU修改，batch["inputs_ids"]对应当前批次所有样本的词元索引矩阵
+        # 赋值后的inputs_ids为(batch_size,seq_length),代表当前批次所有的词元的索引
+        input_ids = batch["input_ids"].to(device)
+        attention_mask = batch["attention_mask"].to(device)
+        assert input_ids.shape[-1] > 0, "输入维度异常"
+        with torch.no_grad():
+            # (batch__size,seq_length,vocab_size)
+            teacher_logits = teacher_model(input_ids, attention_mask=attention_mask).logits
             
  
-#         student_logits = student_model(input_ids, attention_mask=attention_mask).logits
+        student_logits = student_model(input_ids, attention_mask=attention_mask).logits
         
- 
-#         # labels 用来计算学生的 LM 任务损失
-#         labels = input_ids.clone()
-#         # 也可以把 padding位置设为 -100
-#         # 标签处理将填充部分设为-100，避免计算这些位置的损失。
-#         labels[labels==teacher_tokenizer.pad_token_id] = -100
- 
-#         loss = improved_distillation_loss(
-#             student_logits,teacher_logits,
-#             teacher_temp=5.0,
-#             student_temp=2.0,
-#             step=step,
-#             max_steps=10000,
-#             reduction='batchmean',
-#             min_temp=0.1,
-#             temp_penalty=0.01
-#         )
-#         #将每次的损失添加到train_loss_history列表中,便于后续画图
-#         if step > 100:
-#             train_loss_history.append(loss.item())
- 
-#         optimizer.zero_grad()
-#         loss.backward()
-#         optimizer.step()
-#         #增加损失值累加
-#         total_loss_val += loss.item()
- 
-#         if step % 100 == 0:
-#             print(f"Epoch {epoch}, Step {step}, Loss {loss.item():.4f}")
-#             # torch.save(student_model.state_dict(),f"{args.save_path}/{args.save_name}{step//100}.pth")
-#     avg_loss = total_loss_val / (step+1)
-#     print(f"Epoch {epoch} finished, avg loss = {avg_loss:.4f}")
 
-# torch.save(student_model.state_dict(),f"{args.save_path}/{args.save_name}.pth")
-# plt.figure(figsize=(12, 6))
+        # labels 用来计算学生的 LM 任务损失
+        labels = input_ids.clone()
+        # 也可以把 padding位置设为 -100
+        # 标签处理将填充部分设为-100，避免计算这些位置的损失。
+        labels[labels==teacher_tokenizer.pad_token_id] = -100
 
-# plt.plot(train_loss_history,label='step loss')
-# plt.title('Training Loss Curve')
-# plt.xlabel('Training Steps')
-# plt.ylabel('Loss Value')
-# plt.legend()
-# plt.grid(True)
+        current_teacher_temp = decay_temp(2.0, 1.0, step, max_steps=num_step, min_temp=0.1)
+        current_student_temp = decay_temp(1.4, 1.0, step, max_steps=num_step, min_temp=0.1)
+
+        loss = improved_distillation_loss(
+            student_logits,teacher_logits,
+            teacher_temp=current_teacher_temp,
+            student_temp=current_student_temp,
+            step=step,
+            max_steps=10000,
+            reduction='batchmean',
+            min_temp=0.1,
+            temp_penalty=0.01
+        )
+        #将每次的损失添加到train_loss_history列表中,便于后续画图
+        if step > 100:
+            train_loss_history.append(loss.item())
+            teacher_temp_history.append(current_teacher_temp)
+            student_temp_history.append(current_student_temp)
+        optimizer.zero_grad()
+        loss.backward()
+        optimizer.step()
+        #增加损失值累加
+        total_loss_val += loss.item()
+ 
+        if step % 100 == 0:
+            print(f"Epoch {epoch}, Step {step}, Loss {loss.item():.4f}")
+            # torch.save(student_model.state_dict(),f"{args.save_path}/{args.save_name}{step//100}.pth")
+    avg_loss = total_loss_val / (step+1)
+    print(f"Epoch {epoch} finished, avg loss = {avg_loss:.4f}")
+
+torch.save(student_model.state_dict(),f"{args.save_path}/{args.save_name}.pth")
+
+
+plt.figure(figsize=(12, 6))
+
+plt.subplot(2, 1, 1)
+plt.plot(teacher_temp_history, label='Teacher Temperature')
+plt.plot(student_temp_history, label='Student Temperature')
+plt.title('Temperature Decay Curve')
+plt.xlabel('Training Steps')
+plt.ylabel('Temperature Value')
+plt.legend()
+plt.grid(True)
+
+plt.subplot(2, 1, 2)
+plt.plot(train_loss_history,label='step loss')
+plt.title('Training Loss Curve')
+plt.xlabel('Training Steps')
+plt.ylabel('Loss Value')
+plt.legend()
+plt.grid(True)
+
+plt.tight_layout()  # 调整子图布局
+
+
+if not os.path.exists(args.temp_path):
+    os.makedirs(args.temp_path)
+composite_plot_path = os.path.join(args.temp_path, "temperature_and_loss.png")
+plt.savefig(composite_plot_path)
+print(f"Temperature and Loss Curves saved to {composite_plot_path}")
+plt.show()
 
 
 # os.makedirs(args.plot_path,exist_ok=True)
