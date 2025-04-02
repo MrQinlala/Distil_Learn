@@ -1,6 +1,8 @@
 import torch
 from torch import nn
-from transformers import GPT2LMHeadModel, GPT2Tokenizer, AutoTokenizer
+from transformers import GPT2LMHeadModel, GPT2Tokenizer
+from transformers import AutoModelForCausalLM, AutoTokenizer
+
 from datasets import load_dataset,Dataset
 from torch.utils.data import DataLoader
 import torch.nn.functional as F
@@ -12,7 +14,8 @@ import matplotlib.pyplot as plt
 
 # 设置模型名称
 teacher_model_name = "gpt2-medium"
-student_model_name = "gpt2"  # 也可自定义更小的模型结构
+# student_model_name = "gpt2"  # 也可自定义更小的模型结构
+student_model_name = "Qwen/Qwen2.5-1.5B-Instruct"
 device = "cuda" if torch.cuda.is_available() else "cpu" 
 
 # 加载教师和学生模型
@@ -23,8 +26,12 @@ teacher_model = GPT2LMHeadModel.from_pretrained(teacher_model_name).to(device)
 teacher_model.eval()  # 推理/评估模式
  
 student_tokenizer = AutoTokenizer.from_pretrained(student_model_name)
-student_tokenizer.pad_token = student_tokenizer.eos_token
-student_model = GPT2LMHeadModel.from_pretrained(student_model_name).to(device)
+# student_tokenizer.pad_token = student_tokenizer.eos_token
+
+# 如果Qwen需要设置pad_token（可能已内置）
+if student_tokenizer.pad_token is None:
+    student_tokenizer.pad_token = student_tokenizer.eos_token
+student_model = AutoModelForCausalLM.from_pretrained(student_model_name).to(device)
  
 # 简单数据集：使用 wikitext-2 做语言建模蒸馏演示
 train_dataset = load_dataset("wikitext", "wikitext-2-raw-v1", split='train')
@@ -118,11 +125,11 @@ def improved_distillation_loss(
     temp_penalty=0.01    # 温度参数的正则化强度
 ):
     # 动态温度衰减策略（线性衰减到目标温度）
-    def decay_temp(init_temp, final_temp=1.0):
-        if step is None or max_steps <= 0:
-            return init_temp
-        progress = min(step / max_steps, 1.0)
-        return max(init_temp * (1 - progress) + final_temp * progress, min_temp)
+    # def decay_temp(init_temp, final_temp=1.0):
+    #     if step is None or max_steps <= 0:
+    #         return init_temp
+    #     progress = min(step / max_steps, 1.0)
+    #     return max(init_temp * (1 - progress) + final_temp * progress, min_temp)
     
     # 应用温度衰减
     teacher_temp = decay_temp(teacher_temp, final_temp=2.0)
@@ -155,6 +162,11 @@ def improved_distillation_loss(
     loss = (student_temp ** 2) * kl + temp_reg
     return loss
  
+def temp_decay(init_temp,final_temp,max_steps,step)
+     if step is None or max_steps <= 0:
+        return init_temp
+    progress = min(step / max_steps, 1.0)
+    return max(init_temp * (1 - progress) + final_temp * progress, min_temp)
 # 冻结教师模型，不参与训练
 for param in teacher_model.parameters():
     param.requires_grad = False
@@ -175,6 +187,9 @@ parser.add_argument("--save_name",default = 'dl_test')
 
 parser.add_argument("--plot_path",default = './save/img',help="损失曲线保存路径")
 parser.add_argument("--plot_name",default = 'dl_test_first.png',help = "损失曲线文件名")
+
+parser.add_argument("--temp_path",default = './save/temp',help = '温度保存路径')
+parser.add_argument('--temp_name',default = 'dl_test_qwen')
 #解析参数
 args = parser.parse_args()
 
@@ -215,11 +230,12 @@ def evaluate(model, dataloader, tokenizer):
 
 if not os.path.exists(args.save_path):
     os.makedirs(args.save_path)
-student_model.load_state_dict(torch.load("/mnt/workspace/kl/hand_write/save/dl_test.pth"))
-student_loss,student_perplexity=evaluate(student_model, test_loader, student_tokenizer)
-print(f"student Model 测试结果:{student_loss}")
-print(f"平均损失: {student_loss:.4f}, 困惑度: {student_perplexity:.2f}")
 
+
+# student_model.load_state_dict(torch.load("/mnt/workspace/kl/hand_write/save/dl_test.pth"))
+# student_loss,student_perplexity=evaluate(student_model, test_loader, student_tokenizer)
+# print(f"student Model 测试结果:{student_loss}")
+# print(f"平均损失: {student_loss:.4f}, 困惑度: {student_perplexity:.2f}")
 
 # teacher_loss, teacher_perplexity = evaluate(teacher_model, test_loader, teacher_tokenizer)
 # print(f"Teacher Model 测试结果:")
