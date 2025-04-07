@@ -158,7 +158,7 @@ def improved_distillation_loss(
 for param in teacher_model.parameters():
     param.requires_grad = False
  
-optimizer = optim.AdamW(student_model.parameters(), lr=1e-5)
+optimizer = optim.AdamW(student_model.parameters(), lr=5e-5)
  
 num_epochs = 1  # 简单跑1轮演示
 alpha = 0.5
